@@ -56,3 +56,27 @@ func TestReadOpenCodeAuth(t *testing.T) {
 		t.Fatalf("missing file: key=%q err=%v, want empty/nil", key, err)
 	}
 }
+
+func TestUsesAnthropicUpstream(t *testing.T) {
+	tests := []struct {
+		name     string
+		patterns []string
+		model    string
+		want     bool
+	}{
+		{name: "claude model by default", model: "claude-opus-5", want: true},
+		{name: "free model by default", model: "x-preview-f-free", want: false},
+		{name: "gemini by default", model: "gemini-3-flash", want: false},
+		{name: "explicit exact match", patterns: []string{"big-pickle"}, model: "big-pickle", want: true},
+		{name: "explicit prefix match", patterns: []string{"kimi-*"}, model: "kimi-k3", want: true},
+		{name: "explicit list excludes claude", patterns: []string{"kimi-*"}, model: "claude-opus-5", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Config{Proxy: ProxyConfig{AnthropicModels: test.patterns}}
+			if got := cfg.UsesAnthropicUpstream(test.model); got != test.want {
+				t.Fatalf("UsesAnthropicUpstream(%q) = %v, want %v", test.model, got, test.want)
+			}
+		})
+	}
+}

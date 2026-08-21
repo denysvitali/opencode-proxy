@@ -46,7 +46,7 @@ func newRuntime() (*runtime, error) {
 
 	key, keySource, err := cfg.ResolveAPIKey()
 	if err != nil {
-		logger.WithError(err).Warn("no upstream API key configured; model requests will fail until OPENCODE_API_KEY is set")
+		logger.Info("no upstream API key configured; free models still work, paid ones need OPENCODE_API_KEY or `opencode auth login`")
 	} else {
 		logger.WithField("source", keySource).Info("upstream API key loaded")
 	}

@@ -37,7 +37,7 @@ func TestMessagesRewritesModelAndPassesThrough(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cfg := config.Config{Proxy: config.ProxyConfig{DefaultModel: "gemini-3-flash"}}
+	cfg := config.Config{Proxy: config.ProxyConfig{DefaultModel: "claude-sonnet-4-6"}}
 	server := newTestServer(t, upstream, cfg)
 
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(
@@ -55,8 +55,8 @@ func TestMessagesRewritesModelAndPassesThrough(t *testing.T) {
 	if receivedAuth != "Bearer test-key" {
 		t.Fatalf("upstream auth = %q", receivedAuth)
 	}
-	if receivedModel != "gemini-3-flash" {
-		t.Fatalf("upstream model = %q, want gemini-3-flash", receivedModel)
+	if receivedModel != "claude-sonnet-4-6" {
+		t.Fatalf("upstream model = %q, want claude-sonnet-4-6", receivedModel)
 	}
 	var response struct {
 		ID      string `json:"id"`
@@ -86,20 +86,117 @@ func TestMessagesKnownModelPassesThroughUnchanged(t *testing.T) {
 
 	server := newTestServer(t, upstream, config.Config{})
 	server.catalogMu.Lock()
-	server.catalog = []string{"kimi-k3"}
+	server.catalog = []string{"claude-opus-5"}
 	server.catalogFetched = true
 	server.catalogMu.Unlock()
 
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(
-		`{"model":"kimi-k3","max_tokens":8,"messages":[]}`))
+		`{"model":"claude-opus-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`))
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d", recorder.Code)
 	}
-	if receivedModel != "kimi-k3" {
-		t.Fatalf("upstream model = %q, want kimi-k3", receivedModel)
+	if receivedModel != "claude-opus-5" {
+		t.Fatalf("upstream model = %q, want claude-opus-5", receivedModel)
+	}
+}
+
+// TestMessagesTranslatesNonAnthropicModel covers the reason this proxy needs a
+// translation layer at all: Zen hands Anthropic-shaped tool definitions to
+// OpenAI-shaped providers unconverted, and they reject the request.
+func TestMessagesTranslatesNonAnthropicModel(t *testing.T) {
+	var receivedPath string
+	var received struct {
+		Model    string `json:"model"`
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+		Tools []struct {
+			Type     string `json:"type"`
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		receivedPath = request.URL.Path
+		_ = json.NewDecoder(request.Body).Decode(&received)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","model":"kimi-k3","choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]}}],"usage":{"prompt_tokens":3,"completion_tokens":4}}`))
+	}))
+	defer upstream.Close()
+
+	server := newTestServer(t, upstream, config.Config{})
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"kimi-k3","max_tokens":64,
+		"system":"be terse",
+		"messages":[{"role":"user","content":[{"type":"text","text":"weather in Paris?"}]}],
+		"tools":[{"name":"get_weather","description":"d","input_schema":{"type":"object","properties":{}}}]
+	}`))
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %q", recorder.Code, recorder.Body.String())
+	}
+	if receivedPath != "/chat/completions" {
+		t.Fatalf("upstream path = %q, want /chat/completions", receivedPath)
+	}
+	if len(received.Tools) != 1 || received.Tools[0].Function.Name != "get_weather" {
+		t.Fatalf("tools were not translated: %+v", received.Tools)
+	}
+	if len(received.Messages) != 2 || received.Messages[0].Role != "system" {
+		t.Fatalf("messages were not translated: %+v", received.Messages)
+	}
+
+	var response struct {
+		Type       string `json:"type"`
+		StopReason string `json:"stop_reason"`
+		Content    []struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Type != "message" || response.StopReason != "tool_use" {
+		t.Fatalf("unexpected response envelope: %s", recorder.Body.String())
+	}
+	if len(response.Content) != 1 || response.Content[0].Type != "tool_use" || response.Content[0].Name != "get_weather" {
+		t.Fatalf("tool call not translated back: %s", recorder.Body.String())
+	}
+}
+
+func TestMessagesTranslatesStreamingResponse(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+			"data: {\"id\":\"chatcmpl_1\",\"choices\":[{\"index\":0,\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n" +
+			"data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	server := newTestServer(t, upstream, config.Config{})
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(
+		`{"model":"kimi-k3","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %q", recorder.Code, recorder.Body.String())
+	}
+	if contentType := recorder.Header().Get("Content-Type"); contentType != "text/event-stream" {
+		t.Fatalf("content type = %q", contentType)
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{"event: message_start", "event: content_block_delta", "event: message_stop"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream missing %q:\n%s", want, body)
+		}
 	}
 }
 

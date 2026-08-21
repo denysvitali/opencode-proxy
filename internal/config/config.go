@@ -18,6 +18,10 @@ const (
 
 var dateSuffix = regexp.MustCompile(`-\d{8}$`)
 
+// defaultAnthropicModels lists the models Zen serves natively on its Anthropic
+// endpoint. Used when proxy.anthropic_models is unset.
+var defaultAnthropicModels = []string{"claude-*"}
+
 type Config struct {
 	AuthFile  string       `mapstructure:"auth_file"`
 	BaseURL   string       `mapstructure:"base_url"`
@@ -38,6 +42,9 @@ type ServerConfig struct {
 type ProxyConfig struct {
 	DefaultModel string            `mapstructure:"default_model"`
 	ModelMap     map[string]string `mapstructure:"model_map"`
+	// AnthropicModels lists the model patterns Zen serves natively on its
+	// Anthropic /messages endpoint. Entries may end in "*" to match a prefix.
+	AnthropicModels []string `mapstructure:"anthropic_models"`
 }
 
 func DefaultAuthFile() string {
@@ -55,6 +62,7 @@ func New(configFile string) (*viper.Viper, Config, error) {
 	v.SetDefault("server.max_body_bytes", int64(16<<20))
 	v.SetDefault("proxy.default_model", "claude-sonnet-4-6")
 	v.SetDefault("proxy.model_map", map[string]string{})
+	v.SetDefault("proxy.anthropic_models", defaultAnthropicModels)
 	v.SetEnvPrefix("OPENCODE_PROXY")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
@@ -149,4 +157,30 @@ func (c Config) ResolveModel(requested string, knownModels []string) string {
 		return requested
 	}
 	return c.Proxy.DefaultModel
+}
+
+// UsesAnthropicUpstream reports whether a model can be forwarded to Zen's
+// Anthropic /messages endpoint unchanged.
+//
+// Zen only speaks Anthropic natively for Anthropic's own models. For everyone
+// else it hands the body to an OpenAI-shaped provider without converting the
+// tool definitions, so a request carrying tools is rejected outright. Those
+// models are translated to /chat/completions instead.
+func (c Config) UsesAnthropicUpstream(model string) bool {
+	patterns := c.Proxy.AnthropicModels
+	if len(patterns) == 0 {
+		patterns = defaultAnthropicModels
+	}
+	for _, pattern := range patterns {
+		if prefix, ok := strings.CutSuffix(pattern, "*"); ok {
+			if strings.HasPrefix(model, prefix) {
+				return true
+			}
+			continue
+		}
+		if pattern == model {
+			return true
+		}
+	}
+	return false
 }

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/denysvitali/opencode-proxy/internal/translate"
 	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -12,9 +13,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// messages accepts Anthropic Messages API requests and forwards them to the
-// OpenCode Zen /messages endpoint, which is Anthropic-compatible. The body is
-// passed through byte-for-byte except for a rewritten model field.
+// messages accepts Anthropic Messages API requests and forwards them to
+// OpenCode Zen.
+//
+// Anthropic's own models go to Zen's /messages endpoint byte-for-byte, with
+// only the model field rewritten. Every other model is translated to an
+// OpenAI chat-completions request, because Zen forwards Anthropic tool
+// definitions to those providers unconverted and they reject the request.
 func (s *Server) messages(w http.ResponseWriter, request *http.Request) {
 	body, err := s.readBody(w, request)
 	if err != nil {
@@ -34,10 +39,26 @@ func (s *Server) messages(w http.ResponseWriter, request *http.Request) {
 	resolvedModel := s.config.ResolveModel(envelope.Model, s.knownModels())
 	setProxyRequestMeta(w, resolvedModel, envelope.Stream)
 
-	forwarded, err := withModel(body, resolvedModel)
-	if err != nil {
-		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "request could not be encoded")
-		return
+	native := s.config.UsesAnthropicUpstream(resolvedModel)
+	upstreamPath := "/messages"
+	var forwarded []byte
+	var translated *translate.Request
+	if native {
+		forwarded, err = withModel(body, resolvedModel)
+		if err != nil {
+			writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "request could not be encoded")
+			return
+		}
+	} else {
+		upstreamPath = "/chat/completions"
+		translated, err = translate.ParseRequest(body)
+		if err == nil {
+			forwarded, err = translate.ToOpenAI(translated, resolvedModel)
+		}
+		if err != nil {
+			writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "request could not be translated for this model: "+err.Error())
+			return
+		}
 	}
 
 	accept := "application/json"
@@ -45,9 +66,12 @@ func (s *Server) messages(w http.ResponseWriter, request *http.Request) {
 		accept = "text/event-stream"
 	}
 	ctx, span := s.tracer().Start(request.Context(), "zen.messages",
-		trace.WithAttributes(attribute.String("opencode.model", resolvedModel), attribute.Bool("opencode.stream", envelope.Stream)))
+		trace.WithAttributes(
+			attribute.String("opencode.model", resolvedModel),
+			attribute.Bool("opencode.stream", envelope.Stream),
+			attribute.String("opencode.upstream_path", upstreamPath)))
 	defer span.End()
-	response, err := s.zen.Do(ctx, http.MethodPost, "/messages", forwarded, accept)
+	response, err := s.zen.Do(ctx, http.MethodPost, upstreamPath, forwarded, accept)
 	if err != nil {
 		span.SetStatus(codes.Error, err.Error())
 		noteResponseError(w, "api_error", err.Error())
@@ -70,6 +94,11 @@ func (s *Server) messages(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 
+	if !native {
+		s.writeTranslated(w, response, resolvedModel, envelope.Stream, translated.WantsThinking())
+		return
+	}
+
 	contentType := response.Header.Get("Content-Type")
 	if contentType != "" {
 		w.Header().Set("Content-Type", contentType)
@@ -80,6 +109,42 @@ func (s *Server) messages(w http.ResponseWriter, request *http.Request) {
 	}
 	w.WriteHeader(response.StatusCode)
 	passthrough(w, response.Body)
+}
+
+// writeTranslated converts an OpenAI chat-completions response back into the
+// Anthropic shape the client expects, streaming when the client asked to.
+func (s *Server) writeTranslated(w http.ResponseWriter, response *http.Response, model string, stream, thinking bool) {
+	if stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		var flush func()
+		if flusher, ok := w.(http.Flusher); ok {
+			flush = flusher.Flush
+		}
+		writer := translate.NewStreamWriter(w, flush, model, thinking)
+		if err := writer.Consume(response.Body); err != nil {
+			s.log.WithError(err).Warn("upstream stream ended early")
+			writer.Finish()
+		}
+		return
+	}
+
+	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<24))
+	if err != nil {
+		noteResponseError(w, "api_error", err.Error())
+		writeAnthropicError(w, http.StatusBadGateway, "api_error", "upstream response could not be read")
+		return
+	}
+	converted, err := translate.FromOpenAI(data, model, thinking)
+	if err != nil {
+		noteResponseError(w, "api_error", err.Error())
+		writeAnthropicError(w, http.StatusBadGateway, "api_error", "upstream response could not be translated")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(converted)
 }
 
 // tracer returns the proxy-wide OpenTelemetry tracer.

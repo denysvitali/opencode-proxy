@@ -18,7 +18,8 @@ go build -o opencode-proxy .
 
 ## Authentication
 
-The proxy needs an OpenCode Zen API key. It is resolved in this order:
+Free models (`*-free`) work without any credentials. A key is only needed for
+the paid catalog; it is resolved in this order:
 
 1. `OPENCODE_API_KEY`
 2. `api_key` in `~/.config/opencode-proxy/config.yaml`
@@ -80,11 +81,33 @@ proxy:
   default_model: claude-sonnet-4-6
   model_map:
     claude-special: gemini-3.1-pro
+  anthropic_models:
+    - "claude-*"
 ```
 
 Exact entries in `proxy.model_map` take priority. Any model present in the Zen
 catalog passes through unchanged (a trailing `-YYYYMMDD` date suffix is
 stripped before matching). Everything else uses `proxy.default_model`.
+
+### How requests reach Zen
+
+Zen exposes both an Anthropic (`/messages`) and an OpenAI
+(`/chat/completions`) endpoint, and the proxy picks one per model:
+
+- Models matching `proxy.anthropic_models` (`claude-*` by default) are
+  forwarded to `/messages` byte-for-byte, with only the model field rewritten.
+- Every other model is translated to an OpenAI chat-completions request and the
+  response — streaming included — is translated back to Anthropic events.
+
+The translation is not cosmetic. Zen hands Anthropic-shaped `tools` to
+OpenAI-shaped providers without converting them, so those providers reject the
+request outright (`[1210] Invalid API parameter`, or
+`tools[0].function.name is invalid or missing`). Since Claude Code always sends
+tools, every request to a Gemini/GPT/Kimi/free model failed before this was in
+place. Anthropic-only fields with no equivalent (`context_management`,
+`output_config`, `cache_control`, `metadata`) are dropped on the way out;
+upstream `reasoning_content` is surfaced as Anthropic thinking blocks when the
+client asked for thinking.
 
 ### Client authentication and network exposure
 
