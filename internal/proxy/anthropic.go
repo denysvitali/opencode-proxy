@@ -106,6 +106,9 @@ func (s *Server) messages(w http.ResponseWriter, request *http.Request) {
 			response, err = nil, ctx.Err()
 		case <-time.After(upstreamRetryDelay):
 		}
+		if err != nil {
+			break
+		}
 	}
 	if err != nil {
 		span.SetStatus(codes.Error, err.Error())
