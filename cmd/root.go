@@ -60,7 +60,7 @@ func newVersionCommand() *cobra.Command {
 		Use:   "version",
 		Short: "Print the version",
 		Run: func(command *cobra.Command, _ []string) {
-			fmt.Fprintln(command.OutOrStdout(), "opencode-proxy "+version)
+			_, _ = fmt.Fprintln(command.OutOrStdout(), "opencode-proxy "+version)
 		},
 	}
 }

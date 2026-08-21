@@ -44,7 +44,7 @@ func (s *Server) messages(w http.ResponseWriter, request *http.Request) {
 		writeAnthropicError(w, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		s.relayUpstreamError(w, response)

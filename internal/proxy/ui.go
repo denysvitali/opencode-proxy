@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"fmt"
 	"net/http"
 )
 
@@ -217,20 +216,3 @@ code {
   }
 }
 `
-
-func writeHTMLHead(w http.ResponseWriter, title string) {
-	_, _ = fmt.Fprintf(w, `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>%s</title>
-  <style>%s</style>
-</head>
-<body>
-`, title, uiStyles)
-}
-
-func writeHTMLFoot(w http.ResponseWriter) {
-	_, _ = fmt.Fprint(w, `</body></html>`)
-}

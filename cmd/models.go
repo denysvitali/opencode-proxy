@@ -20,7 +20,9 @@ func newModelsCommand() *cobra.Command {
 				return err
 			}
 			for _, model := range models {
-				fmt.Fprintln(command.OutOrStdout(), model.ID)
+				if _, err := fmt.Fprintln(command.OutOrStdout(), model.ID); err != nil {
+					return err
+				}
 			}
 			return nil
 		},

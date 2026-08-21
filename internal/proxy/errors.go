@@ -12,7 +12,7 @@ func (s *Server) readBody(w http.ResponseWriter, request *http.Request) ([]byte,
 		limit = 16 << 20
 	}
 	request.Body = http.MaxBytesReader(w, request.Body, limit)
-	defer request.Body.Close()
+	defer func() { _ = request.Body.Close() }()
 	return io.ReadAll(request.Body)
 }
 
