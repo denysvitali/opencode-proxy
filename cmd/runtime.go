@@ -46,9 +46,10 @@ func newRuntime() (*runtime, error) {
 
 	key, keySource, err := cfg.ResolveAPIKey()
 	if err != nil {
-		return nil, err
+		logger.WithError(err).Warn("no upstream API key configured; model requests will fail until OPENCODE_API_KEY is set")
+	} else {
+		logger.WithField("source", keySource).Info("upstream API key loaded")
 	}
-	logger.WithField("source", keySource).Info("upstream API key loaded")
 
 	client := zen.New(cfg.BaseURL, key)
 	client.HTTP = zen.DefaultHTTPClient()
