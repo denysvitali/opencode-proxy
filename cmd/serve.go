@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/denysvitali/opencode-proxy/internal/proxy"
+	"github.com/denysvitali/opencode-proxy/internal/tracing"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
@@ -35,6 +37,11 @@ func newServeCommand() *cobra.Command {
 				runtime.config.Server.AllowInsecure = true
 			}
 
+			shutdownTracing, err := tracing.Setup(command.Context())
+			if err != nil {
+				runtime.log.WithError(err).Warn("tracing disabled; continuing without OpenTelemetry")
+			}
+
 			handler := proxy.New(runtime.config, runtime.client, runtime.log)
 			if err := handler.ValidateListenAddress(); err != nil {
 				return err
@@ -59,7 +66,14 @@ func newServeCommand() *cobra.Command {
 			}).Info("OpenCode proxy listening")
 			err = server.ListenAndServe()
 			if errors.Is(err, http.ErrServerClosed) {
-				return nil
+				err = nil
+			}
+			if shutdownTracing != nil {
+				shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if shutdownErr := shutdownTracing(shutdownContext); shutdownErr != nil && err == nil {
+					err = shutdownErr
+				}
 			}
 			return err
 		},

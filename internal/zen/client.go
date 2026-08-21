@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type Client struct {
@@ -18,7 +20,7 @@ type Client struct {
 }
 
 func New(baseURL, key string) *Client {
-	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), Key: key, HTTP: &http.Client{Timeout: 0}}
+	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), Key: key, HTTP: &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}}
 }
 
 // Do performs an authenticated request against the Zen API. A nil body means
@@ -92,5 +94,5 @@ func (e *HTTPError) Error() string {
 }
 
 func DefaultHTTPClient() *http.Client {
-	return &http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second, ResponseHeaderTimeout: 10 * time.Minute}}
+	return &http.Client{Transport: otelhttp.NewTransport(&http.Transport{Proxy: http.ProxyFromEnvironment, MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second, ResponseHeaderTimeout: 10 * time.Minute})}
 }

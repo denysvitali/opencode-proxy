@@ -12,6 +12,7 @@ import (
 	"github.com/denysvitali/opencode-proxy/internal/config"
 	"github.com/denysvitali/opencode-proxy/internal/zen"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const catalogRefreshInterval = 10 * time.Minute
@@ -88,7 +89,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.authenticate(s.models))
 	mux.HandleFunc("POST /v1/messages", s.authenticate(s.messages))
 	mux.HandleFunc("POST /v1/messages/count_tokens", s.authenticate(s.countTokens))
-	return s.recoverPanics(s.logRequests(s.withRequestID(mux)))
+	return otelhttp.NewHandler(s.recoverPanics(s.logRequests(s.withRequestID(mux))), "opencode-proxy")
 }
 
 func (s *Server) ValidateListenAddress() error {

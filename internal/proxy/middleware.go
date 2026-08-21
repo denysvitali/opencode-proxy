@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func (s *Server) authenticate(next http.HandlerFunc) http.HandlerFunc {
@@ -70,6 +71,10 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		}
 		if agent := request.Header.Get("User-Agent"); agent != "" {
 			fields["user_agent"] = truncateLogValue(agent, 120)
+		}
+		if spanContext := trace.SpanFromContext(request.Context()).SpanContext(); spanContext.IsValid() {
+			fields["trace_id"] = spanContext.TraceID().String()
+			fields["span_id"] = spanContext.SpanID().String()
 		}
 
 		entry := s.log.WithFields(fields)

@@ -4,6 +4,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+
+	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // messages accepts Anthropic Messages API requests and forwards them to the
@@ -38,8 +44,12 @@ func (s *Server) messages(w http.ResponseWriter, request *http.Request) {
 	if envelope.Stream {
 		accept = "text/event-stream"
 	}
-	response, err := s.zen.Do(request.Context(), http.MethodPost, "/messages", forwarded, accept)
+	ctx, span := s.tracer().Start(request.Context(), "zen.messages",
+		trace.WithAttributes(attribute.String("opencode.model", resolvedModel), attribute.Bool("opencode.stream", envelope.Stream)))
+	defer span.End()
+	response, err := s.zen.Do(ctx, http.MethodPost, "/messages", forwarded, accept)
 	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		noteResponseError(w, "api_error", err.Error())
 		writeAnthropicError(w, http.StatusBadGateway, "api_error", err.Error())
 		return
@@ -47,6 +57,15 @@ func (s *Server) messages(w http.ResponseWriter, request *http.Request) {
 	defer func() { _ = response.Body.Close() }()
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		span.SetStatus(codes.Error, response.Status)
+		if s.log.IsLevelEnabled(logrus.DebugLevel) {
+			s.log.WithFields(logrus.Fields{
+				"request_id": response.Header.Get("x-request-id"),
+				"model":      resolvedModel,
+				"status":     response.StatusCode,
+				"body":       truncateLogValue(string(forwarded), 8192),
+			}).Debug("upstream rejected request body")
+		}
 		s.relayUpstreamError(w, response)
 		return
 	}
@@ -61,6 +80,11 @@ func (s *Server) messages(w http.ResponseWriter, request *http.Request) {
 	}
 	w.WriteHeader(response.StatusCode)
 	passthrough(w, response.Body)
+}
+
+// tracer returns the proxy-wide OpenTelemetry tracer.
+func (s *Server) tracer() trace.Tracer {
+	return otel.Tracer("opencode-proxy")
 }
 
 // withModel rewrites only the model field of a JSON object, preserving every
