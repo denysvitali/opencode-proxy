@@ -280,3 +280,83 @@ func TestModelsEndpoint(t *testing.T) {
 		t.Fatalf("unexpected model list: %s", recorder.Body.String())
 	}
 }
+
+// TestMessagesRetriesTransientUpstreamFailure covers the single retry on
+// upstream gateway errors: the first 503 must not fail the whole turn. Only
+// the /messages path may fail — Server.New also fetches the model catalog
+// from this upstream, and that call must not consume the scripted failure.
+func TestMessagesRetriesTransientUpstreamFailure(t *testing.T) {
+	attempts := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/messages" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		attempts++
+		if attempts == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"temporarily overloaded"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_ok","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	server := newTestServer(t, upstream, config.Config{Proxy: config.ProxyConfig{DefaultModel: "claude-sonnet-4-6"}})
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(
+		`{"model":"claude-sonnet-4-6","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`))
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %q", recorder.Code, recorder.Body.String())
+	}
+	if attempts != 2 {
+		t.Fatalf("upstream attempts = %d, want 2", attempts)
+	}
+}
+
+// TestMessagesExplainsMissingUpstreamKeyOn401 covers keyless deployments: a
+// relayed upstream "invalid API key" would send users chasing their own
+// credentials, so the proxy names the real cause instead.
+func TestMessagesExplainsMissingUpstreamKeyOn401(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"Invalid API key provided"}}`))
+	}))
+	defer upstream.Close()
+
+	client := zen.New("http://"+strings.TrimPrefix(upstream.URL, "http://"), "")
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	server := New(config.Config{}, client, logger)
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(
+		`{"model":"claude-opus-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`))
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "requires an OpenCode Zen API key") || strings.Contains(body, "Invalid API key provided") {
+		t.Fatalf("expected keyless explanation, got: %s", body)
+	}
+}
+
+func TestHelloEndpointAnswersGetAndHead(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	defer upstream.Close()
+
+	server := newTestServer(t, upstream, config.Config{})
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		request := httptest.NewRequest(method, "/api/hello", nil)
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s /api/hello status = %d, want 200", method, recorder.Code)
+		}
+	}
+}

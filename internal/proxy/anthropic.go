@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/denysvitali/opencode-proxy/internal/translate"
 	"github.com/sirupsen/logrus"
@@ -12,6 +14,21 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// retryableUpstream reports whether a failed upstream call is worth a second
+// attempt: transport errors, or gateway statuses that usually mean the
+// upstream was momentarily overloaded.
+func retryableUpstream(response *http.Response, err error) bool {
+	if err != nil {
+		return true
+	}
+	switch response.StatusCode {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
 
 // messages accepts Anthropic Messages API requests and forwards them to
 // OpenCode Zen.
@@ -71,7 +88,25 @@ func (s *Server) messages(w http.ResponseWriter, request *http.Request) {
 			attribute.Bool("opencode.stream", envelope.Stream),
 			attribute.String("opencode.upstream_path", upstreamPath)))
 	defer span.End()
-	response, err := s.zen.Do(ctx, http.MethodPost, upstreamPath, forwarded, accept)
+	// Nothing has been written to the client yet and the body is fully
+	// buffered, so a single quick retry on a transient upstream failure is
+	// free and saves the whole turn.
+	var response *http.Response
+	for attempt := 0; ; attempt++ {
+		response, err = s.zen.Do(ctx, http.MethodPost, upstreamPath, forwarded, accept)
+		if attempt >= upstreamRetries || !retryableUpstream(response, err) {
+			break
+		}
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		s.log.WithField("attempt", attempt+1).Warn("upstream unavailable; retrying")
+		select {
+		case <-ctx.Done():
+			response, err = nil, ctx.Err()
+		case <-time.After(upstreamRetryDelay):
+		}
+	}
 	if err != nil {
 		span.SetStatus(codes.Error, err.Error())
 		noteResponseError(w, "api_error", err.Error())
@@ -87,8 +122,18 @@ func (s *Server) messages(w http.ResponseWriter, request *http.Request) {
 				"request_id": response.Header.Get("x-request-id"),
 				"model":      resolvedModel,
 				"status":     response.StatusCode,
-				"body":       truncateLogValue(string(forwarded), 1<<20),
+				"body_size":  len(forwarded),
+				"body":       truncateLogValue(string(forwarded), rejectedBodyLogLimit),
 			}).Debug("upstream rejected request body")
+		}
+		// Without an upstream key Zen rejects paid models with 401/403; the
+		// relayed body would blame the client's credentials, so explain the
+		// actual cause instead.
+		if (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) && !s.zen.HasAPIKey() {
+			message := fmt.Sprintf("model %q requires an OpenCode Zen API key but none is configured; set OPENCODE_API_KEY", resolvedModel)
+			noteResponseError(w, anthropicErrorType(response.StatusCode), message)
+			writeAnthropicError(w, response.StatusCode, anthropicErrorType(response.StatusCode), message)
+			return
 		}
 		s.relayUpstreamError(w, response)
 		return

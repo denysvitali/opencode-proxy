@@ -23,6 +23,12 @@ func New(baseURL, key string) *Client {
 	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), Key: key, HTTP: &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}}
 }
 
+// HasAPIKey reports whether an upstream API key is configured. Without one,
+// Zen only serves its free models.
+func (c *Client) HasAPIKey() bool {
+	return c.Key != ""
+}
+
 // Do performs an authenticated request against the Zen API. A nil body means
 // no request body is sent.
 func (c *Client) Do(ctx context.Context, method, path string, body []byte, accept string) (*http.Response, error) {

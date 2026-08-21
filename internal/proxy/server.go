@@ -17,6 +17,19 @@ import (
 
 const catalogRefreshInterval = 10 * time.Minute
 
+const (
+	// upstreamRetries is how many extra attempts a transient upstream
+	// failure gets before the error reaches the client.
+	upstreamRetries = 1
+	// upstreamRetryDelay spaces the retry from the failed attempt.
+	upstreamRetryDelay = 750 * time.Millisecond
+	// rejectedBodyLogLimit caps the debug dump of bodies Zen rejects. These
+	// can exceed 1MB of user conversation content; a prefix plus the size
+	// is enough to see what went wrong without copying whole prompts into
+	// log aggregation.
+	rejectedBodyLogLimit = 2 << 10
+)
+
 type Server struct {
 	config config.Config
 	zen    *zen.Client
@@ -85,6 +98,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", s.authenticate(s.dashboard))
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
+	// GET also registers HEAD. An external uptime monitor polls this path
+	// every few minutes; before it existed every poll was logged as a 404.
+	mux.HandleFunc("GET /api/hello", s.hello)
 	mux.Handle("GET /metrics", metricsHandler())
 	mux.HandleFunc("GET /v1/models", s.authenticate(s.models))
 	mux.HandleFunc("POST /v1/messages", s.authenticate(s.messages))
@@ -115,4 +131,8 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, healthResponse{Status: "ready"})
+}
+
+func (s *Server) hello(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, healthResponse{Status: "ok"})
 }
