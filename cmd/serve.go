@@ -40,6 +40,8 @@ func newServeCommand() *cobra.Command {
 			shutdownTracing, err := tracing.Setup(command.Context())
 			if err != nil {
 				runtime.log.WithError(err).Warn("tracing disabled; continuing without OpenTelemetry")
+			} else if shutdownTracing == nil {
+				runtime.log.Info("tracing disabled; set OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_TRACES_EXPORTER to enable")
 			}
 
 			handler := proxy.New(runtime.config, runtime.client, runtime.log)

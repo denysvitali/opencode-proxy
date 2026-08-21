@@ -63,7 +63,7 @@ func (s *Server) messages(w http.ResponseWriter, request *http.Request) {
 				"request_id": response.Header.Get("x-request-id"),
 				"model":      resolvedModel,
 				"status":     response.StatusCode,
-				"body":       truncateLogValue(string(forwarded), 8192),
+				"body":       truncateLogValue(string(forwarded), 1<<20),
 			}).Debug("upstream rejected request body")
 		}
 		s.relayUpstreamError(w, response)
