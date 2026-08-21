@@ -1,0 +1,14 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "packageRules": [
+    {
+      "description": "Bump all dependencies in a single PR",
+      "groupName": "all dependencies",
+      "groupSlug": "all",
+      "matchUpdateTypes": ["major", "minor", "patch", "digest", "pin", "rollback", "lockFileMaintenance"],
+      "separateMajorMinor": false,
+      "separateMultipleMajor": false
+    }
+  ]
+}
