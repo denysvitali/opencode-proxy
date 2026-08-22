@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -99,6 +100,27 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("OpenCode Zen returned HTTP %d: %s", e.Status, strings.TrimSpace(string(e.Body)))
 }
 
+// DefaultHTTPClient returns a client tuned for many parallel in-flight
+// requests to the single Zen host. MaxIdleConnsPerHost matters most: Go's
+// default of 2 makes every request beyond two concurrent ones pay a fresh
+// TLS handshake even though the sockets are otherwise idle.
 func DefaultHTTPClient() *http.Client {
-	return &http.Client{Transport: otelhttp.NewTransport(&http.Transport{Proxy: http.ProxyFromEnvironment, MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second, ResponseHeaderTimeout: 10 * time.Minute})}
+	return &http.Client{
+		Transport: otelhttp.NewTransport(&http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   15 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:   true,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 32,
+			IdleConnTimeout:     90 * time.Second,
+			TLSHandshakeTimeout: 15 * time.Second,
+			// Long thinking pauses can leave a stream silent for minutes
+			// before the next SSE event; don't let read deadlines kill it.
+			ResponseHeaderTimeout: 10 * time.Minute,
+			ExpectContinueTimeout: time.Second,
+		}),
+	}
 }

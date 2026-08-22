@@ -50,6 +50,10 @@ func routeLabel(path string) string {
 		return "/v1/messages"
 	case path == "/v1/messages/count_tokens":
 		return "/v1/messages/count_tokens"
+	case path == "/v1/responses":
+		return "/v1/responses"
+	case path == "/v1/chat/completions":
+		return "/v1/chat/completions"
 	case strings.HasPrefix(path, "/v1/"):
 		return "/v1/*"
 	default:
@@ -61,7 +65,7 @@ func protocolLabel(path string) string {
 	switch path {
 	case "/v1/messages", "/v1/messages/count_tokens":
 		return "anthropic"
-	case "/v1/models":
+	case "/v1/models", "/v1/responses", "/v1/chat/completions":
 		return "openai"
 	default:
 		return "http"

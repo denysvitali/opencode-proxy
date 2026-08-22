@@ -6,9 +6,16 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
+	"time"
 )
 
 const maxStreamLine = 8 << 20
+
+// keepaliveInterval spaces out ping events on translated streams. Long
+// thinking pauses can leave the upstream silent for minutes; without
+// traffic, idle-timeout middleboxes kill the connection mid-turn.
+var keepaliveInterval = 15 * time.Second
 
 type openAIChunk struct {
 	ID      string `json:"id"`
@@ -32,8 +39,11 @@ type StreamWriter struct {
 	flush           func()
 	model           string
 	includeThinking bool
+	keepalive       time.Duration
 
+	mu            sync.Mutex
 	started       bool
+	closed        bool
 	blockOpen     bool
 	blockKind     string
 	blockIndex    int
@@ -43,12 +53,15 @@ type StreamWriter struct {
 }
 
 func NewStreamWriter(writer io.Writer, flush func(), model string, includeThinking bool) *StreamWriter {
-	return &StreamWriter{writer: writer, flush: flush, model: model, includeThinking: includeThinking, openToolIndex: -1}
+	return &StreamWriter{writer: writer, flush: flush, model: model, includeThinking: includeThinking, keepalive: keepaliveInterval, openToolIndex: -1}
 }
 
 // Consume reads the upstream SSE stream to completion, emitting Anthropic
-// events as it goes.
+// events as it goes. Ping events are emitted during upstream silences so
+// intermediaries do not reap the connection mid-turn.
 func (s *StreamWriter) Consume(body io.Reader) error {
+	stopKeepalive := s.startKeepalive()
+	defer stopKeepalive()
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxStreamLine)
 	for scanner.Scan() {
@@ -69,17 +82,53 @@ func (s *StreamWriter) Consume(body io.Reader) error {
 			continue
 		}
 		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
-			s.emit("error", map[string]any{"type": "error", "error": json.RawMessage(chunk.Error)})
+			s.mu.Lock()
+			closed := s.closed
+			s.mu.Unlock()
+			if !closed {
+				s.emit("error", map[string]any{"type": "error", "error": json.RawMessage(chunk.Error)})
+				s.Finish()
+			}
 			return nil
 		}
 		s.consumeChunk(chunk)
 	}
+	err := scanner.Err()
 	s.Finish()
-	return scanner.Err()
+	return err
+}
+
+// startKeepalive emits ping events until the returned stop func runs.
+func (s *StreamWriter) startKeepalive() func() {
+	interval := s.keepalive
+	if interval <= 0 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				s.mu.Lock()
+				finished := s.closed
+				s.mu.Unlock()
+				if !finished {
+					s.emit("ping", map[string]any{"type": "ping"})
+				}
+			}
+		}
+	}()
+	return func() { close(done) }
 }
 
 func (s *StreamWriter) consumeChunk(chunk openAIChunk) {
-	s.ensureStarted(chunk.ID, chunk.Model)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureStartedLocked(chunk.ID, chunk.Model)
 	if chunk.Usage != nil {
 		s.usage.InputTokens = chunk.Usage.PromptTokens
 		s.usage.OutputTokens = chunk.Usage.CompletionTokens
@@ -91,23 +140,23 @@ func (s *StreamWriter) consumeChunk(chunk openAIChunk) {
 	choice := chunk.Choices[0]
 
 	if choice.Delta.ReasoningContent != "" && s.includeThinking {
-		s.openBlock("thinking", map[string]any{"type": "thinking", "thinking": ""}, -1)
-		s.emit("content_block_delta", map[string]any{
+		s.openBlockLocked("thinking", map[string]any{"type": "thinking", "thinking": ""}, -1)
+		s.writeEvent("content_block_delta", map[string]any{
 			"type":  "content_block_delta",
 			"index": s.blockIndex,
 			"delta": map[string]any{"type": "thinking_delta", "thinking": choice.Delta.ReasoningContent},
 		})
 	}
 	if choice.Delta.Content != "" {
-		s.openBlock("text", map[string]any{"type": "text", "text": ""}, -1)
-		s.emit("content_block_delta", map[string]any{
+		s.openBlockLocked("text", map[string]any{"type": "text", "text": ""}, -1)
+		s.writeEvent("content_block_delta", map[string]any{
 			"type":  "content_block_delta",
 			"index": s.blockIndex,
 			"delta": map[string]any{"type": "text_delta", "text": choice.Delta.Content},
 		})
 	}
 	for _, call := range choice.Delta.ToolCalls {
-		s.consumeToolCall(call)
+		s.consumeToolCallLocked(call)
 	}
 	if choice.FinishReason != "" {
 		s.stopReason = stopReason(choice.FinishReason)
@@ -116,9 +165,9 @@ func (s *StreamWriter) consumeChunk(chunk openAIChunk) {
 
 // consumeToolCall opens a tool_use block the first time a call index is seen
 // and streams its arguments as input_json_delta fragments.
-func (s *StreamWriter) consumeToolCall(call openAIToolCall) {
+func (s *StreamWriter) consumeToolCallLocked(call openAIToolCall) {
 	if s.blockKind != "tool_use" || s.openToolIndex != call.Index {
-		s.openBlock("tool_use", map[string]any{
+		s.openBlockLocked("tool_use", map[string]any{
 			"type":  "tool_use",
 			"id":    toolUseID(call.ID),
 			"name":  call.Function.Name,
@@ -128,14 +177,14 @@ func (s *StreamWriter) consumeToolCall(call openAIToolCall) {
 	if call.Function.Arguments == "" {
 		return
 	}
-	s.emit("content_block_delta", map[string]any{
+	s.writeEvent("content_block_delta", map[string]any{
 		"type":  "content_block_delta",
 		"index": s.blockIndex,
 		"delta": map[string]any{"type": "input_json_delta", "partial_json": call.Function.Arguments},
 	})
 }
 
-func (s *StreamWriter) ensureStarted(id, model string) {
+func (s *StreamWriter) ensureStartedLocked(id, model string) {
 	if s.started {
 		return
 	}
@@ -143,7 +192,7 @@ func (s *StreamWriter) ensureStarted(id, model string) {
 	if model != "" {
 		s.model = model
 	}
-	s.emit("message_start", map[string]any{
+	s.writeEvent("message_start", map[string]any{
 		"type": "message_start",
 		"message": AnthropicMessageOut{
 			ID:      messageID(id),
@@ -156,59 +205,76 @@ func (s *StreamWriter) ensureStarted(id, model string) {
 }
 
 // openBlock closes the current content block, if any, and starts a new one.
-func (s *StreamWriter) openBlock(kind string, block map[string]any, toolIndex int) {
+func (s *StreamWriter) openBlockLocked(kind string, block map[string]any, toolIndex int) {
 	if s.blockOpen && s.blockKind == kind && (kind != "tool_use" || s.openToolIndex == toolIndex) {
 		return
 	}
-	s.closeBlock()
+	s.closeBlockLocked()
 	s.blockOpen = true
 	s.blockKind = kind
 	s.openToolIndex = toolIndex
-	s.emit("content_block_start", map[string]any{
+	s.writeEvent("content_block_start", map[string]any{
 		"type":          "content_block_start",
 		"index":         s.blockIndex,
 		"content_block": block,
 	})
 }
 
-func (s *StreamWriter) closeBlock() {
+func (s *StreamWriter) closeBlockLocked() {
 	if !s.blockOpen {
 		return
 	}
 	if s.blockKind == "thinking" {
-		s.emit("content_block_delta", map[string]any{
+		s.writeEvent("content_block_delta", map[string]any{
 			"type":  "content_block_delta",
 			"index": s.blockIndex,
 			"delta": map[string]any{"type": "signature_delta", "signature": thinkingSignature},
 		})
 	}
-	s.emit("content_block_stop", map[string]any{"type": "content_block_stop", "index": s.blockIndex})
+	s.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": s.blockIndex})
 	s.blockOpen = false
 	s.blockKind = ""
 	s.openToolIndex = -1
 	s.blockIndex++
 }
 
-// Finish closes the message. It is safe to call more than once.
+// Finish closes the message. It is safe to call more than once. When no
+// chunk ever arrived it still emits a complete empty message so the client
+// ends its turn instead of waiting on a silent stream forever.
 func (s *StreamWriter) Finish() {
-	if !s.started {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
 		return
 	}
-	s.closeBlock()
+	s.closed = true
+	if !s.started {
+		s.ensureStartedLocked("", "")
+		s.openBlockLocked("text", map[string]any{"type": "text", "text": ""}, -1)
+		s.closeBlockLocked()
+	}
+	s.closeBlockLocked()
 	reason := s.stopReason
 	if reason == "" {
 		reason = "end_turn"
 	}
-	s.emit("message_delta", map[string]any{
+	s.writeEvent("message_delta", map[string]any{
 		"type":  "message_delta",
 		"delta": map[string]any{"stop_reason": reason, "stop_sequence": nil},
 		"usage": s.usage,
 	})
-	s.emit("message_stop", map[string]any{"type": "message_stop"})
-	s.started = false
+	s.writeEvent("message_stop", map[string]any{"type": "message_stop"})
 }
 
+// emit serializes one SSE frame; callers that already hold the mutex use
+// writeEvent directly.
 func (s *StreamWriter) emit(event string, payload any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.writeEvent(event, payload)
+}
+
+func (s *StreamWriter) writeEvent(event string, payload any) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return

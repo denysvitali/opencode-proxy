@@ -160,6 +160,29 @@ var dashboardTemplate = template.Must(template.New("dashboard").Parse(`<!doctype
       <p class="subline" style="margin-bottom:0">If client authentication is enabled, replace <code>local</code> with the configured API key. Pick any model above with <code>claude --model &lt;model-id&gt;</code>.</p>
     </section>
 
+    <section class="card card-wide setup">
+      <div class="card-header">
+        <div class="section-label"><span class="dot"></span>Codex CLI</div>
+      </div>
+      <p class="lede">Codex speaks the OpenAI Responses API; this proxy translates it for you. Add the provider to <code>~/.codex/config.toml</code>.</p>
+      <div class="setup-grid">
+        <div class="setup-block">
+          <label for="codex-provider">Provider snippet (config.toml)</label>
+          <textarea id="codex-provider" readonly aria-label="Codex provider configuration"></textarea>
+        </div>
+        <div class="setup-block">
+          <label for="codex-run">Launch command</label>
+          <textarea id="codex-command" readonly aria-label="Codex launch command"></textarea>
+          <div class="setup-actions">
+            <button id="copy-codex-config" type="button">Copy config</button>
+            <button id="copy-codex-command" type="button">Copy command</button>
+            <span id="codex-copy-status" class="copy-status" aria-live="polite"></span>
+          </div>
+        </div>
+      </div>
+      <p class="subline" style="margin-bottom:0">Run once: <code>codex exec -c model_provider=opencode-proxy -m &lt;model-id&gt; "…"</code>, or set <code>model_provider</code> and <code>model</code> at the top of your config.toml. If client authentication is enabled, put the key in <code>OPENAI_API_KEY</code>.</p>
+    </section>
+
     <footer class="footer">Requests are forwarded to OpenCode Zen. Model IDs come straight from the Zen catalog.</footer>
   </div>
 </main>
@@ -171,15 +194,46 @@ var dashboardTemplate = template.Must(template.New("dashboard").Parse(`<!doctype
   function updateClaudeCommand() {
     claudeCommand.value = "ANTHROPIC_BASE_URL=" + window.location.protocol + "//" + proxyHost.value.trim() + " \\\nANTHROPIC_AUTH_TOKEN=local \\\nclaude";
   }
-  proxyHost.addEventListener("input", updateClaudeCommand);
+  const codexProvider = document.getElementById("codex-provider");
+  const codexCommand = document.getElementById("codex-command");
+  function updateCodexConfig() {
+    const base = window.location.protocol + "//" + proxyHost.value.trim();
+    codexProvider.value = '[model_providers.opencode-proxy]\nname = "opencode-proxy"\nbase_url = "' + base + '/v1"\nenv_key = "OPENAI_API_KEY"\nwire_api = "responses"';
+    codexCommand.value = "OPENAI_API_KEY=local codex exec \\\n  -c model_provider=opencode-proxy \\\n  -m <model-id> \\\n  \"your prompt\"";
+  }
+  proxyHost.addEventListener("input", () => { updateClaudeCommand(); updateCodexConfig(); });
+  async function flashStatus(element) {
+    element.textContent = "Copied";
+    setTimeout(() => { element.textContent = ""; }, 1200);
+  }
   copyClaudeCommand.addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(claudeCommand.value);
-      copyStatus.textContent = "Copied";
+      flashStatus(copyStatus);
     } catch {
       claudeCommand.select();
       document.execCommand("copy");
-      copyStatus.textContent = "Copied";
+      flashStatus(copyStatus);
+    }
+  });
+  document.getElementById("copy-codex-config").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(codexProvider.value);
+      flashStatus(document.getElementById("codex-copy-status"));
+    } catch {
+      codexProvider.select();
+      document.execCommand("copy");
+      flashStatus(document.getElementById("codex-copy-status"));
+    }
+  });
+  document.getElementById("copy-codex-command").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(codexCommand.value);
+      flashStatus(document.getElementById("codex-copy-status"));
+    } catch {
+      codexCommand.select();
+      document.execCommand("copy");
+      flashStatus(document.getElementById("codex-copy-status"));
     }
   });
   async function copyText(text) {
@@ -217,6 +271,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Parse(`<!doctype
     document.getElementById("model-count").textContent = visible + (visible === 1 ? " model" : " models");
   });
   updateClaudeCommand();
+  updateCodexConfig();
 </script>
 </body>
 </html>`))

@@ -35,8 +35,10 @@ opencode-proxy serve
 The default listener is `127.0.0.1:8090`. The server exposes:
 
 - `GET /` for proxy status, the full model catalog with one-click copy of each
-  model ID, and a ready-to-paste Claude Code launch command
+  model ID, and ready-to-paste Claude Code and Codex launch configs
 - `POST /v1/messages` for Claude Code and Anthropic Messages clients
+- `POST /v1/responses` for Codex CLI (OpenAI Responses API)
+- `POST /v1/chat/completions` for OpenAI chat-completions clients
 - `POST /v1/messages/count_tokens` for a conservative local token estimate
 - `GET /v1/models` for an OpenAI-style model list
 - `GET /healthz`, `GET /readyz`, `GET /metrics`
@@ -53,6 +55,35 @@ Model IDs are listed on the dashboard (`GET /`) with a copy button next to
 each one. Claude model names that exist in Zen (for example
 `claude-opus-5`) pass through unchanged; unknown names fall back to the
 configured default model.
+
+> [!TIP]
+> Claude Code does not know the context window of third-party models and
+> warns about it. Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to the model's real
+> window (or ignore the warning); a `settings.json` `model` entry overrides
+> `ANTHROPIC_MODEL`, so pass `--model` explicitly when needed.
+
+### Codex CLI
+
+Add the provider to `~/.codex/config.toml`:
+
+```toml
+[model_providers.opencode-proxy]
+name = "opencode-proxy"
+base_url = "http://127.0.0.1:8090/v1"
+env_key = "OPENAI_API_KEY"   # any value works unless client auth is enabled
+wire_api = "responses"       # the proxy translates this to Zen for you
+```
+
+Then run:
+
+```bash
+OPENAI_API_KEY=local codex exec -c model_provider=opencode-proxy \
+  -m gemini-3-flash "fix the failing test"
+```
+
+Codex's shell, edit and reasoning tools work through the translation layer;
+`wire_api = "chat"` is also supported via the `/v1/chat/completions`
+passthrough.
 
 ### Other commands
 
@@ -98,6 +129,8 @@ Zen exposes both an Anthropic (`/messages`) and an OpenAI
   forwarded to `/messages` byte-for-byte, with only the model field rewritten.
 - Every other model is translated to an OpenAI chat-completions request and the
   response — streaming included — is translated back to Anthropic events.
+- Codex's Responses requests are translated to chat-completions (and back),
+  whichever upstream model they target.
 
 The translation is not cosmetic. Zen hands Anthropic-shaped `tools` to
 OpenAI-shaped providers without converting them, so those providers reject the

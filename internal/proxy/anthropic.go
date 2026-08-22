@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/denysvitali/opencode-proxy/internal/translate"
-	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -91,27 +89,8 @@ func (s *Server) messages(w http.ResponseWriter, request *http.Request) {
 	// Nothing has been written to the client yet and the body is fully
 	// buffered, so a single quick retry on a transient upstream failure is
 	// free and saves the whole turn.
-	var response *http.Response
-	for attempt := 0; ; attempt++ {
-		response, err = s.zen.Do(ctx, http.MethodPost, upstreamPath, forwarded, accept)
-		if attempt >= upstreamRetries || !retryableUpstream(response, err) {
-			break
-		}
-		if response != nil {
-			_ = response.Body.Close()
-		}
-		s.log.WithField("attempt", attempt+1).Warn("upstream unavailable; retrying")
-		select {
-		case <-ctx.Done():
-			response, err = nil, ctx.Err()
-		case <-time.After(upstreamRetryDelay):
-		}
-		if err != nil {
-			break
-		}
-	}
+	response, err := s.doWithRetry(ctx, span, upstreamPath, forwarded, accept)
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
 		noteResponseError(w, "api_error", err.Error())
 		writeAnthropicError(w, http.StatusBadGateway, "api_error", err.Error())
 		return
@@ -120,15 +99,7 @@ func (s *Server) messages(w http.ResponseWriter, request *http.Request) {
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		span.SetStatus(codes.Error, response.Status)
-		if s.log.IsLevelEnabled(logrus.DebugLevel) {
-			s.log.WithFields(logrus.Fields{
-				"request_id": response.Header.Get("x-request-id"),
-				"model":      resolvedModel,
-				"status":     response.StatusCode,
-				"body_size":  len(forwarded),
-				"body":       truncateLogValue(string(forwarded), rejectedBodyLogLimit),
-			}).Debug("upstream rejected request body")
-		}
+		s.logRejectedBody(response, resolvedModel, forwarded)
 		// Without an upstream key Zen rejects paid models with 401/403; the
 		// relayed body would blame the client's credentials, so explain the
 		// actual cause instead.

@@ -105,6 +105,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.authenticate(s.models))
 	mux.HandleFunc("POST /v1/messages", s.authenticate(s.messages))
 	mux.HandleFunc("POST /v1/messages/count_tokens", s.authenticate(s.countTokens))
+	// OpenAI dialects: Codex CLI's Responses API plus a chat-completions
+	// passthrough for clients configured with wire_api="chat".
+	mux.HandleFunc("POST /v1/responses", s.authenticate(s.responses))
+	mux.HandleFunc("POST /v1/chat/completions", s.authenticate(s.chatCompletions))
 	return otelhttp.NewHandler(s.recoverPanics(s.logRequests(s.withRequestID(mux))), "opencode-proxy")
 }
 
