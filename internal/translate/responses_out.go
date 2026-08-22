@@ -250,10 +250,6 @@ func customCallID(id string) string {
 
 // --- Streaming ------------------------------------------------------------
 
-const (
-	responsesKeepaliveInterval = 15 * time.Second
-)
-
 // ResponsesStreamWriter consumes an OpenAI chat-completions SSE stream and
 // re-emits it as Responses API events.
 //

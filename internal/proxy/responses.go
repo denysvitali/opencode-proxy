@@ -258,16 +258,16 @@ func writeOpenAIError(w http.ResponseWriter, status int, message string) {
 
 // responsesErrorType maps an HTTP status onto an OpenAI-style error type.
 func responsesErrorType(status int) string {
-	switch {
-	case status == http.StatusUnauthorized:
+	switch status {
+	case http.StatusUnauthorized:
 		return "authentication_error"
-	case status == http.StatusForbidden:
+	case http.StatusForbidden:
 		return "permission_error"
-	case status == http.StatusNotFound:
+	case http.StatusNotFound:
 		return "not_found_error"
-	case status == http.StatusBadRequest:
+	case http.StatusBadRequest:
 		return "invalid_request_error"
-	case status == http.StatusTooManyRequests:
+	case http.StatusTooManyRequests:
 		return "rate_limit_error"
 	default:
 		return "api_error"
