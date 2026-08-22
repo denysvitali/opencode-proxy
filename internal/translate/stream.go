@@ -109,14 +109,18 @@ func (s *StreamWriter) Consume(body io.Reader) error {
 	return errors.New("upstream stream ended without emitting any events")
 }
 
-// startKeepalive emits ping events until the returned stop func runs.
+// startKeepalive emits ping events until the returned stop func runs. The
+// stop func waits for the goroutine to exit so no ping is ever in flight
+// after Consume returns.
 func (s *StreamWriter) startKeepalive() func() {
 	interval := s.keepalive
 	if interval <= 0 {
 		return func() {}
 	}
 	done := make(chan struct{})
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -133,7 +137,10 @@ func (s *StreamWriter) startKeepalive() func() {
 			}
 		}
 	}()
-	return func() { close(done) }
+	return func() {
+		close(done)
+		<-stopped
+	}
 }
 
 func (s *StreamWriter) consumeChunk(chunk openAIChunk) {
