@@ -15,8 +15,8 @@ import (
 
 // responsesUsage is the usage block of a Responses API response.
 type responsesUsage struct {
-	InputTokens         int `json:"input_tokens"`
-	InputTokensDetails  struct {
+	InputTokens        int `json:"input_tokens"`
+	InputTokensDetails struct {
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"input_tokens_details"`
 	OutputTokens        int `json:"output_tokens"`
@@ -286,9 +286,9 @@ type ResponsesStreamWriter struct {
 	calls     map[int]*streamedToolCall
 	callOrder []int
 
-	output       []map[string]any
-	usage        *responsesUsage
-	stopReason   string
+	output     []map[string]any
+	usage      *responsesUsage
+	stopReason string
 }
 
 type streamedToolCall struct {
@@ -354,11 +354,11 @@ func (s *ResponsesStreamWriter) consumeChunk(chunk openAIChunk) {
 		s.openReasoning()
 		s.reasoning.WriteString(delta)
 		s.emit("response.reasoning_summary_text.delta", map[string]any{
-			"type":       "response.reasoning_summary_text.delta",
-			"item_id":    s.reasoningID,
-			"output_index": s.outputIndex - 1,
+			"type":          "response.reasoning_summary_text.delta",
+			"item_id":       s.reasoningID,
+			"output_index":  s.outputIndex - 1,
 			"summary_index": 0,
-			"delta":      delta,
+			"delta":         delta,
 		})
 	}
 	if delta := choice.Delta.Content; delta != "" {

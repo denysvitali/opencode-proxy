@@ -56,11 +56,11 @@ type responsesItem struct {
 	Arguments string `json:"arguments"`
 	Status    string `json:"status"`
 
-	Content   json.RawMessage `json:"content"`
-	Input     json.RawMessage `json:"input"` // freeform payload of custom_tool_call
-	Output    json.RawMessage `json:"output"`
-	Action    json.RawMessage `json:"action"`
-	Summary   json.RawMessage `json:"summary"`
+	Content json.RawMessage `json:"content"`
+	Input   json.RawMessage `json:"input"` // freeform payload of custom_tool_call
+	Output  json.RawMessage `json:"output"`
+	Action  json.RawMessage `json:"action"`
+	Summary json.RawMessage `json:"summary"`
 }
 
 // ParseResponsesRequest decodes an OpenAI Responses API request body.
