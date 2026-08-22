@@ -21,14 +21,39 @@ const (
 	// upstreamRetries is how many extra attempts a transient upstream
 	// failure gets before the error reaches the client.
 	upstreamRetries = 1
-	// upstreamRetryDelay spaces the retry from the failed attempt.
+	// midstreamRetries is how many extra attempts a broken upstream response
+	// body gets while nothing has been forwarded to the client yet. The client
+	// only experiences a longer wait.
+	midstreamRetries = 2
+	// upstreamRetryDelay spaces the first retry from the failed attempt;
+	// later retries double each time.
 	upstreamRetryDelay = 750 * time.Millisecond
 	// rejectedBodyLogLimit caps the debug dump of bodies Zen rejects. These
 	// can exceed 1MB of user conversation content; a prefix plus the size
 	// is enough to see what went wrong without copying whole prompts into
 	// log aggregation.
 	rejectedBodyLogLimit = 2 << 10
+	// relayBodyLimit caps how much of a non-streaming upstream body is
+	// buffered before it is relayed, so a read failure can still be retried.
+	relayBodyLimit = 16 << 20
 )
+
+// retryPause waits out the backoff before another upstream attempt and reports
+// whether the client is still there to wait for it.
+func retryPause(ctx context.Context, attempt int) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(upstreamRetryDelay << attempt):
+		return true
+	}
+}
+
+// errReader stands in for an upstream body whose fetch itself failed, so retry
+// loops can treat "could not fetch" like any other mid-transfer break.
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
 
 type Server struct {
 	config config.Config

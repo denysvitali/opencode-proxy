@@ -22,7 +22,42 @@ var (
 		Help:    "HTTP request duration in seconds.",
 		Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120},
 	}, []string{"method", "route", "status", "protocol"})
+
+	// upstreamRetryAttempts counts every extra upstream attempt made after a
+	// transient failure. phase is "connect" (request rejected before a body
+	// existed) or "body" (the response stream broke mid-transfer).
+	upstreamRetryAttempts = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "opencode_proxy_upstream_retry_attempts_total",
+		Help: "Extra upstream attempts made after transient failures.",
+	}, []string{"phase"})
+
+	// upstreamRetryOutcomes records how a transient upstream failure ended:
+	// "recovered" (a retry succeeded), "exhausted" (retries ran out and the
+	// client got an error) or "surfaced" (content had already been forwarded,
+	// so the break was reported as an in-stream error instead of replayed).
+	upstreamRetryOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "opencode_proxy_upstream_retry_outcomes_total",
+		Help: "How transient upstream failures ended.",
+	}, []string{"phase", "outcome"})
 )
+
+// retry phases and outcomes used by the upstream retry metrics.
+const (
+	retryPhaseConnect = "connect"
+	retryPhaseBody    = "body"
+
+	retryRecovered = "recovered"
+	retryExhausted = "exhausted"
+	retrySurfaced  = "surfaced"
+)
+
+func noteRetryAttempt(phase string) {
+	upstreamRetryAttempts.WithLabelValues(phase).Inc()
+}
+
+func noteRetryOutcome(phase, outcome string) {
+	upstreamRetryOutcomes.WithLabelValues(phase, outcome).Inc()
+}
 
 func metricsHandler() http.Handler {
 	return promhttp.Handler()

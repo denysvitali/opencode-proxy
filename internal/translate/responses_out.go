@@ -3,6 +3,7 @@ package translate
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -331,9 +332,22 @@ func (s *ResponsesStreamWriter) Consume(body io.Reader) error {
 		}
 		s.consumeChunk(chunk)
 	}
-	err := scanner.Err()
+	if err := scanner.Err(); err != nil {
+		// The upstream broke mid-stream; leave the response unfinished so the
+		// caller can end it with an explicit failure instead of a "completed"
+		// envelope that hides the truncation.
+		return err
+	}
+	if !s.started {
+		return errors.New("upstream ended the stream without emitting any events")
+	}
+	if s.stopReason == "" {
+		// The upstream hung up before any finish_reason. Completing here
+		// would dress a truncated answer up as a finished turn.
+		return errors.New("upstream stream ended without a finish reason")
+	}
 	s.Complete()
-	return err
+	return nil
 }
 
 func (s *ResponsesStreamWriter) consumeChunk(chunk openAIChunk) {
@@ -591,6 +605,16 @@ func (s *ResponsesStreamWriter) Complete() {
 	s.emit("response.completed", map[string]any{
 		"type": "response.completed", "response": object,
 	})
+}
+
+// FailMessage fails the response with a plain message — for breaks the proxy
+// detects itself rather than failures reported by upstream.
+func (s *ResponsesStreamWriter) FailMessage(message string) {
+	raw, err := json.Marshal(map[string]any{"message": message, "type": "api_error"})
+	if err != nil {
+		return
+	}
+	s.Fail(raw)
 }
 
 // Fail aborts the stream with an error payload, emitting response.failed

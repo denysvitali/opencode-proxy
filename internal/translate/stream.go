@@ -3,6 +3,7 @@ package translate
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -93,9 +94,19 @@ func (s *StreamWriter) Consume(body io.Reader) error {
 		}
 		s.consumeChunk(chunk)
 	}
-	err := scanner.Err()
-	s.Finish()
-	return err
+	if err := scanner.Err(); err != nil {
+		// The upstream broke mid-stream; leave the message unfinished so the
+		// caller can end it with an explicit error instead of a completion
+		// that hides the truncation.
+		return err
+	}
+	if s.started {
+		// The upstream hung up without [DONE]. Ending the message here would
+		// dress a truncated answer up as a completed turn, which is exactly
+		// the silent-stop bug this guards against.
+		return errors.New("upstream stream ended before the completion marker")
+	}
+	return errors.New("upstream stream ended without emitting any events")
 }
 
 // startKeepalive emits ping events until the returned stop func runs.
@@ -264,6 +275,26 @@ func (s *StreamWriter) Finish() {
 		"usage": s.usage,
 	})
 	s.writeEvent("message_stop", map[string]any{"type": "message_stop"})
+}
+
+// Fail ends the stream with an explicit Anthropic error event instead of a
+// normal completion. The client sees a real failure it can retry rather than
+// a truncated answer that looks finished.
+func (s *StreamWriter) Fail(message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.closed = true
+	if !s.started {
+		return
+	}
+	s.closeBlockLocked()
+	s.writeEvent("error", map[string]any{
+		"type":  "error",
+		"error": map[string]any{"type": "api_error", "message": message},
+	})
 }
 
 // emit serializes one SSE frame; callers that already hold the mutex use

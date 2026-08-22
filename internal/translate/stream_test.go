@@ -9,23 +9,18 @@ import (
 
 func nilEOF() error { return io.EOF }
 
-// TestStreamWriterEmptyUpstreamStillCompletes covers a 200 from upstream that
-// carries no events at all: the client must still receive a complete message
-// envelope instead of a silent stream it waits on forever.
-func TestStreamWriterEmptyUpstreamStillCompletes(t *testing.T) {
+// TestStreamWriterEmptyUpstreamFails covers a 200 from upstream that carries
+// no events at all: Consume must report it as a failure — the proxy retries
+// such streams — instead of emitting a fake complete message that hides the
+// empty turn.
+func TestStreamWriterEmptyUpstreamFails(t *testing.T) {
 	var output strings.Builder
 	writer := NewStreamWriter(&output, nil, "m", false)
-	if err := writer.Consume(strings.NewReader("")); err != nil {
-		t.Fatal(err)
+	if err := writer.Consume(strings.NewReader("")); err == nil {
+		t.Fatal("an empty upstream stream must be reported as a failure")
 	}
-	body := output.String()
-	for _, want := range []string{"event: message_start", "event: content_block_start", "event: message_delta", "event: message_stop"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("missing %q in:\n%s", want, body)
-		}
-	}
-	if !strings.Contains(body, `"stop_reason":"end_turn"`) {
-		t.Fatalf("missing stop_reason:\n%s", body)
+	if output.String() != "" {
+		t.Fatalf("no events may be emitted for an empty stream:\n%s", output.String())
 	}
 }
 
@@ -36,8 +31,9 @@ func TestStreamWriterKeepalivePingsDuringSilence(t *testing.T) {
 	var output strings.Builder
 	writer := NewStreamWriter(&output, nil, "m", false)
 	writer.keepalive = 20 * time.Millisecond
-	if err := writer.Consume(upstream); err != nil {
-		t.Fatal(err)
+	err := writer.Consume(upstream)
+	if err == nil {
+		t.Fatal("a stream ending without [DONE] must be reported as truncated")
 	}
 	if got := strings.Count(output.String(), "event: ping"); got < 2 {
 		t.Fatalf("pings = %d, want >= 2:\n%s", got, output.String())

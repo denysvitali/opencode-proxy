@@ -255,7 +255,7 @@ func TestResponsesStreamWriterEmitsFullEventSequence(t *testing.T) {
 func TestResponsesStreamWriterClassifiesShellCalls(t *testing.T) {
 	kinds := &ResponsesToolKinds{ShellTool: true}
 	upstream := strings.Join([]string{
-		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"shell","arguments":"{\"command\":[\"pwd\"]}"}}]}},{"index":0,"finish_reason":"tool_calls","delta":{}}]}`,
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"shell","arguments":"{\"command\":[\"pwd\"]}"}}]},"finish_reason":"tool_calls"}]}`,
 		`data: [DONE]`,
 		"",
 	}, "\n\n")
@@ -274,17 +274,17 @@ func TestResponsesStreamWriterClassifiesShellCalls(t *testing.T) {
 	}
 }
 
-func TestResponsesStreamWriterEmptyUpstreamStillCompletes(t *testing.T) {
+// TestResponsesStreamWriterEmptyUpstreamFails covers a 200 from upstream with
+// no events at all: Consume must report it as a failure — the proxy retries
+// such streams — instead of emitting a fake completed envelope.
+func TestResponsesStreamWriterEmptyUpstreamFails(t *testing.T) {
 	var output strings.Builder
 	writer := NewResponsesStreamWriter(&output, nil, "m", nil)
-	if err := writer.Consume(strings.NewReader("")); err != nil {
-		t.Fatal(err)
+	if err := writer.Consume(strings.NewReader("")); err == nil {
+		t.Fatal("an empty upstream stream must be reported as a failure")
 	}
-	body := output.String()
-	for _, want := range []string{"event: response.created", "event: response.completed"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("missing %q in:\n%s", want, body)
-		}
+	if output.String() != "" {
+		t.Fatalf("no events may be emitted for an empty stream:\n%s", output.String())
 	}
 }
 
